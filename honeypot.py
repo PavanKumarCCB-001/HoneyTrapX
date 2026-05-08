@@ -1,85 +1,155 @@
 import socket
 import threading
 import csv
+import json
 import os
 import time
+import requests
 from datetime import datetime
 
-LOG_FILE = "logs/attacks.csv"
+LOG_FILE_CSV = "logs/attacks.csv"
+LOG_FILE_JSON = "logs/attacks.json"
+DASHBOARD_URL = "http://127.0.0.1:5000/api/report_attack"
 
-# Fake service banners to lure attackers
+# Fake service banners
 BANNERS = {
-    21:  b"220 FTP server ready (vsftpd 2.0.1)\r\n",
-    22:  b"SSH-2.0-OpenSSH_4.3\r\n",
-    23:  b"\r\nWelcome to Cisco Router\r\nlogin: ",
-    80:  b"HTTP/1.1 200 OK\r\nServer: Apache/2.2.3\r\nContent-Length: 0\r\n\r\n",
-    3306:b"5.0.51a-community\r\n",
-    8080:b"HTTP/1.1 200 OK\r\nServer: Tomcat/4.1\r\n\r\n",
+    2121:  b"220 FTP server ready (vsftpd 2.0.1)\r\n",
+    2222:  b"SSH-2.0-OpenSSH_4.3\r\n",
+    2323:  b"\r\nWelcome to Cisco Router\r\nlogin: ",
+    8080:  b"HTTP/1.1 200 OK\r\nServer: Apache/2.2.3\r\nContent-Length: 0\r\n\r\n",
+    33060: b"5.0.51a-community\r\n",
+    8081:  b"HTTP/1.1 200 OK\r\nServer: Tomcat/4.1\r\n\r\n",
 }
 
 PORT_NAMES = {
-    21: "FTP",
-    22: "SSH",
-    23: "Telnet",
-    80: "HTTP",
-    3306: "MySQL",
-    8080: "HTTP-ALT",
+    2121: "FTP",
+    2222: "SSH",
+    2323: "Telnet",
+    8080: "HTTP",
+    33060: "MySQL",
+    8081: "HTTP-ALT",
 }
 
 ATTACK_TYPES = {
-    21:  "FTP Probe",
-    22:  "SSH Brute Force / Scan",
-    23:  "Telnet Exploit Attempt",
-    80:  "Web Scan / HTTP Probe",
-    3306:"Database Attack",
-    8080:"Web App Attack",
+    2121:  "FTP Probe",
+    2222:  "SSH Brute Force / Scan",
+    2323:  "Telnet Exploit Attempt",
+    8080:  "Web Scan / HTTP Probe",
+    33060: "Database Attack",
+    8081:  "Web App Attack",
+}
+
+# Simple fake shell responses
+FAKE_SHELL_RESPONSES = {
+    "ls": "bin  boot  dev  etc  home  lib  media  mnt  opt  root  run  sbin  srv  sys  tmp  usr  var\n",
+    "whoami": "root\n",
+    "uname -a": "Linux debian 4.19.0-6-amd64 #1 SMP Debian 4.19.67-2 (2019-08-28) x86_64 GNU/Linux\n",
+    "pwd": "/root\n",
+    "cat /etc/passwd": "root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000:admin:/home/admin:/bin/bash\n",
 }
 
 os.makedirs("logs", exist_ok=True)
-os.makedirs("reports", exist_ok=True)
 
-# Initialize CSV with headers if not exists
-if not os.path.exists(LOG_FILE):
-    with open(LOG_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp", "attacker_ip", "attacker_port", "target_port",
-                         "service", "attack_type", "payload", "duration_ms"])
+geo_cache = {}
 
+def get_geo(ip):
+    if ip in geo_cache: return geo_cache[ip]
+    if ip in ["127.0.0.1", "localhost"] or ip.startswith("192.168."):
+        return "Local Network", "Internal"
+    try:
+        response = requests.get(f"http://ip-api.com/json/{ip}", timeout=2).json()
+        if response.get("status") == "success":
+            geo = (response.get("country", "Unknown"), response.get("city", "Unknown"))
+            geo_cache[ip] = geo
+            return geo
+    except: pass
+    return "Unknown", "Unknown"
+
+def init_logs():
+    headers = ["timestamp", "attacker_ip", "attacker_port", "target_port",
+               "service", "attack_type", "payload", "duration_ms", "country", "city"]
+    if not os.path.exists(LOG_FILE_CSV):
+        with open(LOG_FILE_CSV, "w", newline="") as f:
+            csv.writer(f).writerow(headers)
+
+init_logs()
 log_lock = threading.Lock()
 
+def notify_dashboard(attack_data):
+    try: requests.post(DASHBOARD_URL, json=attack_data, timeout=1)
+    except: pass
+
 def log_attack(ip, attacker_port, target_port, payload, duration_ms):
-    service = PORT_NAMES.get(target_port, "Unknown")
-    attack_type = ATTACK_TYPES.get(target_port, "Generic Probe")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    clean_payload = payload.replace("\n", " ").replace("\r", " ")[:100]
+    country, city = get_geo(ip)
+    attack_data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "attacker_ip": ip, "attacker_port": attacker_port, "target_port": target_port,
+        "service": PORT_NAMES.get(target_port, "Unknown"),
+        "attack_type": ATTACK_TYPES.get(target_port, "Generic Probe"),
+        "payload": payload.replace("\n", " ")[:200],
+        "duration_ms": round(duration_ms, 2),
+        "country": country, "city": city
+    }
+
     with log_lock:
-        with open(LOG_FILE, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([timestamp, ip, attacker_port, target_port,
-                             service, attack_type, clean_payload, round(duration_ms, 2)])
-    print(f"[{timestamp}] ATTACK → IP: {ip}:{attacker_port} | Port: {target_port} ({service}) | Type: {attack_type}")
+        # Log to CSV
+        with open(LOG_FILE_CSV, "a", newline="") as f:
+            csv.writer(f).writerow(list(attack_data.values()))
+        # Log to JSON
+        with open(LOG_FILE_JSON, "a") as f:
+            f.write(json.dumps(attack_data) + "\n")
+
+    print(f"[{attack_data['timestamp']}] {attack_data['service']} hit by {ip} ({country})")
+    notify_dashboard(attack_data)
 
 def handle_connection(conn, addr, port):
     start = time.time()
     attacker_ip, attacker_port = addr
+    payload_parts = []
+
     try:
         banner = BANNERS.get(port, b"Connected.\r\n")
         conn.sendall(banner)
-        conn.settimeout(3)
-        try:
+        conn.settimeout(10)
+
+        if port in [2222, 2323]:
+            # Simple interactive shell lure
             data = conn.recv(1024)
-            payload = data.decode("utf-8", errors="replace") if data else ""
-        except:
-            payload = ""
+            if data:
+                payload_parts.append(data.decode(errors="ignore").strip())
+                conn.sendall(b"Username: ")
+                user = conn.recv(1024)
+                if user:
+                    payload_parts.append(f"USER:{user.decode(errors='ignore').strip()}")
+                    conn.sendall(b"Password: ")
+                    pw = conn.recv(1024)
+                    if pw:
+                        payload_parts.append(f"PASS:{pw.decode(errors='ignore').strip()}")
+                        conn.sendall(b"\r\nWelcome to the restricted shell. Type 'help' for commands.\r\n# ")
+
+                        # Miniature fake shell loop (2 commands max to avoid hanging)
+                        for _ in range(2):
+                            cmd_data = conn.recv(1024)
+                            if not cmd_data: break
+                            cmd = cmd_data.decode(errors="ignore").strip().lower()
+                            payload_parts.append(f"CMD:{cmd}")
+                            if cmd in FAKE_SHELL_RESPONSES:
+                                conn.sendall(FAKE_SHELL_RESPONSES[cmd].encode() + b"# ")
+                            elif cmd == "exit":
+                                break
+                            else:
+                                conn.sendall(f"sh: {cmd}: command not found\n# ".encode())
+        else:
+            data = conn.recv(1024)
+            if data: payload_parts.append(data.decode(errors="ignore").strip())
+
     except Exception as e:
-        payload = f"[Error: {e}]"
+        payload_parts.append(f"[Error: {e}]")
     finally:
         duration_ms = (time.time() - start) * 1000
-        log_attack(attacker_ip, attacker_port, port, payload, duration_ms)
-        try:
-            conn.close()
-        except:
-            pass
+        log_attack(attacker_ip, attacker_port, port, " | ".join(payload_parts), duration_ms)
+        try: conn.close()
+        except: pass
 
 def start_listener(port):
     try:
@@ -87,34 +157,21 @@ def start_listener(port):
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", port))
         server.listen(5)
-        print(f"[+] Honeypot listening on port {port} ({PORT_NAMES.get(port, 'Unknown')})")
+        print(f"[*] Listening on port {port} ({PORT_NAMES.get(port)})")
         while True:
-            try:
-                conn, addr = server.accept()
-                t = threading.Thread(target=handle_connection, args=(conn, addr, port), daemon=True)
-                t.start()
-            except Exception as e:
-                print(f"[!] Error on port {port}: {e}")
-    except OSError as e:
-        print(f"[!] Could not bind port {port}: {e} — skipping")
+            conn, addr = server.accept()
+            threading.Thread(target=handle_connection, args=(conn, addr, port), daemon=True).start()
+    except Exception as e:
+        print(f"[!] Could not start listener on {port}: {e}")
 
-def start_honeypot():
-    print("=" * 55)
-    print("   WIRELESS HONEYPOT — ATTACK CAPTURE ENGINE")
-    print("=" * 55)
-    print(f"   Logging to: {LOG_FILE}")
-    print("=" * 55)
-    threads = []
+def run():
+    print("="*50 + "\n   HONEYTRAPX REAL-TIME ENGINE STARTING\n" + "="*50)
     for port in BANNERS.keys():
-        t = threading.Thread(target=start_listener, args=(port,), daemon=True)
-        t.start()
-        threads.append(t)
-    print("\n[*] All honeypot listeners active. Waiting for connections...\n")
+        threading.Thread(target=start_listener, args=(port,), daemon=True).start()
     try:
-        while True:
-            time.sleep(1)
+        while True: time.sleep(1)
     except KeyboardInterrupt:
-        print("\n[!] Honeypot stopped by user.")
+        print("\n[!] Stopping...")
 
 if __name__ == "__main__":
-    start_honeypot()
+    run()

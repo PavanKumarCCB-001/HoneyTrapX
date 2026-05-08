@@ -3,8 +3,9 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Wireless Honeypot — Attack Analysis Dashboard</title>
+<title>HoneytrapX — Real-Time Threat Intelligence</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 <style>
   :root {
     --bg:       #080d13;
@@ -32,7 +33,6 @@
       radial-gradient(ellipse at 90% 80%, rgba(0,170,255,0.04) 0%, transparent 60%);
   }
 
-  /* ── HEADER ── */
   header {
     border-bottom: 1px solid var(--border);
     padding: 18px 32px;
@@ -43,9 +43,7 @@
     position: sticky; top: 0; z-index: 100;
     backdrop-filter: blur(8px);
   }
-  .logo {
-    display: flex; align-items: center; gap: 14px;
-  }
+  .logo { display: flex; align-items: center; gap: 14px; }
   .logo-icon {
     width: 40px; height: 40px;
     border: 2px solid var(--green);
@@ -63,12 +61,8 @@
     font-size: 20px; font-weight: 700; letter-spacing: 2px;
     color: var(--green); text-transform: uppercase;
   }
-  .logo-text p {
-    font-family: var(--mono); font-size: 11px; color: var(--muted);
-  }
-  .header-right {
-    display: flex; align-items: center; gap: 20px;
-  }
+  .logo-text p { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
   .live-badge {
     display: flex; align-items: center; gap: 6px;
     font-family: var(--mono); font-size: 12px; color: var(--green);
@@ -82,18 +76,9 @@
     animation: blink 1s infinite;
   }
   @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
-  .refresh-btn {
-    background: none; border: 1px solid var(--muted);
-    color: var(--text); font-family: var(--mono); font-size: 12px;
-    padding: 5px 14px; border-radius: 4px; cursor: pointer;
-    transition: all .2s;
-  }
-  .refresh-btn:hover { border-color: var(--green); color: var(--green); }
 
-  /* ── LAYOUT ── */
   main { padding: 28px 32px; max-width: 1400px; margin: 0 auto; }
 
-  /* ── STAT CARDS ── */
   .stat-row {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -105,51 +90,28 @@
     border-radius: 10px;
     padding: 22px 24px;
     position: relative; overflow: hidden;
-    transition: transform .2s, box-shadow .2s;
   }
-  .stat-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 8px 32px rgba(0,255,136,0.1);
-  }
-  .stat-card::before {
-    content: ''; position: absolute;
-    top: 0; left: 0; right: 0; height: 2px;
-  }
-  .stat-card.g::before { background: var(--green); }
-  .stat-card.r::before { background: var(--red); }
-  .stat-card.y::before { background: var(--yellow); }
-  .stat-card.b::before { background: var(--blue); }
   .stat-label {
     font-family: var(--mono); font-size: 11px; color: var(--muted);
     letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px;
   }
   .stat-value {
     font-size: 40px; font-weight: 700; line-height: 1;
-    font-family: var(--mono);
+    font-family: var(--mono); color: var(--green);
   }
-  .stat-card.g .stat-value { color: var(--green); }
   .stat-card.r .stat-value { color: var(--red); }
   .stat-card.y .stat-value { color: var(--yellow); }
   .stat-card.b .stat-value { color: var(--blue); }
-  .stat-sub {
-    font-size: 12px; color: var(--muted); margin-top: 6px;
-    font-family: var(--mono);
-  }
-  .stat-icon {
-    position: absolute; right: 20px; top: 20px;
-    font-size: 28px; opacity: 0.15;
-  }
 
-  /* ── GRID ── */
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 28px; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 28px; }
 
-  /* ── PANEL ── */
   .panel {
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 10px;
     overflow: hidden;
+    display: flex; flex-direction: column;
   }
   .panel-header {
     padding: 14px 20px;
@@ -162,15 +124,34 @@
     text-transform: uppercase; color: var(--green);
     font-family: var(--mono);
   }
-  .panel-body { padding: 20px; }
+  .panel-body { padding: 20px; flex-grow: 1; }
 
-  /* ── CHARTS ── */
-  .chart-img {
-    width: 100%; border-radius: 6px;
-    background: #0d1117;
+  .chart-img { width: 100%; border-radius: 6px; background: #0d1117; }
+
+  /* ── LIVE FEED ── */
+  .live-feed {
+    height: 300px;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: #05080b;
+    padding: 15px;
+    border-radius: 4px;
+    border: 1px solid #111;
   }
+  .feed-entry {
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #111;
+    animation: slideIn 0.3s ease-out;
+  }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+  .feed-ts { color: var(--muted); margin-right: 10px; }
+  .feed-ip { color: var(--green); font-weight: bold; }
+  .feed-geo { color: var(--blue); margin: 0 8px; }
+  .feed-svc { color: var(--yellow); }
+  .feed-payload { color: #888; display: block; margin-top: 4px; font-style: italic; }
 
-  /* ── THREAT TABLE ── */
   .threat-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .threat-table th {
     text-align: left; padding: 8px 12px;
@@ -182,88 +163,17 @@
     padding: 10px 12px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
     font-family: var(--mono); font-size: 12px;
-    vertical-align: middle;
   }
-  .threat-table tr:hover td { background: rgba(0,255,136,0.03); }
   .badge {
-    display: inline-block; padding: 2px 8px;
-    border-radius: 4px; font-size: 10px; font-weight: 700;
-    letter-spacing: .5px;
+    padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700;
   }
   .badge-ssh  { background: rgba(255,51,85,.15);  color: var(--red);    border: 1px solid rgba(255,51,85,.3); }
-  .badge-ftp  { background: rgba(255,204,0,.15);  color: var(--yellow); border: 1px solid rgba(255,204,0,.3); }
-  .badge-http { background: rgba(0,170,255,.15);  color: var(--blue);   border: 1px solid rgba(0,170,255,.3); }
-  .badge-tel  { background: rgba(204,68,255,.15); color: var(--purple); border: 1px solid rgba(204,68,255,.3); }
-  .badge-db   { background: rgba(255,102,0,.15);  color: #ff6600;       border: 1px solid rgba(255,102,0,.3); }
-  .badge-gen  { background: rgba(0,255,136,.1);   color: var(--green);  border: 1px solid rgba(0,255,136,.3); }
-  .ip-text { color: var(--green); }
-  .ts-text { color: var(--muted); font-size: 11px; }
+  .badge-geo  { background: rgba(0,170,255,.15);  color: var(--blue);   border: 1px solid rgba(0,170,255,.3); }
 
-  /* ── DEFENSE STRATEGIES ── */
-  .strategy-block { margin-bottom: 18px; }
-  .strategy-title {
-    font-size: 13px; font-weight: 700; color: var(--red);
-    font-family: var(--mono); margin-bottom: 10px;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .strategy-title::before {
-    content: '⚠'; font-size: 14px;
-  }
-  .strategy-list { list-style: none; }
-  .strategy-list li {
-    padding: 7px 0 7px 20px;
-    border-left: 2px solid var(--green2);
-    margin-bottom: 6px;
-    font-size: 13px; color: var(--text);
-    position: relative;
-  }
-  .strategy-list li::before {
-    content: '→'; position: absolute; left: 6px;
-    color: var(--green); font-size: 11px;
-  }
-
-  /* ── THREAT LEVEL ── */
-  .threat-meter {
-    display: flex; align-items: center; gap: 12px; margin-top: 10px;
-  }
-  .threat-bar {
-    flex: 1; height: 8px; background: #1a2a1a;
-    border-radius: 4px; overflow: hidden;
-  }
-  .threat-fill {
-    height: 100%; border-radius: 4px;
-    background: linear-gradient(90deg, var(--green), var(--yellow), var(--red));
-    transition: width .8s ease;
-  }
-  .threat-label { font-family: var(--mono); font-size: 12px; min-width: 60px; }
-
-  /* ── ALERTS ── */
-  .alert-box {
-    background: rgba(255,51,85,0.08);
-    border: 1px solid rgba(255,51,85,0.3);
-    border-radius: 8px; padding: 14px 18px;
-    margin-bottom: 12px;
-    font-family: var(--mono); font-size: 12px;
-    display: flex; align-items: flex-start; gap: 12px;
-  }
-  .alert-box.warn {
-    background: rgba(255,204,0,0.06);
-    border-color: rgba(255,204,0,0.3);
-  }
-  .alert-icon { font-size: 18px; flex-shrink: 0; }
-  .alert-text b { display: block; font-size: 13px; margin-bottom: 3px; }
-
-  /* ── FOOTER ── */
   footer {
     text-align: center; padding: 20px;
     font-family: var(--mono); font-size: 11px; color: var(--muted);
-    border-top: 1px solid var(--border); margin-top: 10px;
-  }
-
-  @media(max-width:900px){
-    .stat-row { grid-template-columns: 1fr 1fr; }
-    .grid2, .grid3 { grid-template-columns: 1fr; }
-    main { padding: 16px; }
+    border-top: 1px solid var(--border);
   }
 </style>
 </head>
@@ -274,269 +184,179 @@
     <div class="logo-icon">🕸</div>
     <div class="logo-text">
       <h1>HoneytrapX</h1>
-      <p>Wireless Honeypot · Attack Analysis System</p>
+      <p>Real-Time Global Threat Intelligence</p>
     </div>
   </div>
   <div class="header-right">
-    <div class="live-badge"><div class="live-dot"></div>MONITORING ACTIVE</div>
-    <button class="refresh-btn" onclick="refreshData()">⟳ REFRESH</button>
+    <div class="live-badge"><div class="live-dot"></div> LIVE MONITORING</div>
   </div>
 </header>
 
 <main>
-
-  <!-- STAT CARDS -->
   <div class="stat-row">
-    <div class="stat-card g">
-      <div class="stat-icon">📡</div>
-      <div class="stat-label">Total Attacks Captured</div>
-      <div class="stat-value" id="total">{{ stats.total_attacks }}</div>
-      <div class="stat-sub">All-time logged events</div>
+    <div class="stat-card">
+      <div class="stat-label">Total Attacks</div>
+      <div class="stat-value" id="stat-total">{{ stats.total_attacks }}</div>
     </div>
     <div class="stat-card r">
-      <div class="stat-icon">🌐</div>
-      <div class="stat-label">Unique Attacker IPs</div>
-      <div class="stat-value" id="unique">{{ stats.unique_ips }}</div>
-      <div class="stat-sub">Distinct sources detected</div>
+      <div class="stat-label">Unique IPs</div>
+      <div class="stat-value" id="stat-unique">{{ stats.unique_ips }}</div>
     </div>
     <div class="stat-card y">
-      <div class="stat-icon">⏰</div>
-      <div class="stat-label">Last 24 Hours</div>
-      <div class="stat-value" id="last24">{{ stats.last_24h }}</div>
-      <div class="stat-sub">Recent attack attempts</div>
+      <div class="stat-label">Top Country</div>
+      <div class="stat-value" style="font-size:20px; padding-top:10px" id="stat-country">
+        {{ stats.top_countries[0].country if stats.top_countries else 'N/A' }}
+      </div>
     </div>
     <div class="stat-card b">
-      <div class="stat-icon">🎯</div>
-      <div class="stat-label">Top Attack Type</div>
-      <div class="stat-value" style="font-size:16px; padding-top:8px" id="toptype">
-        {{ stats.top_attack_type }}
-      </div>
-      <div class="stat-sub">Most frequent vector</div>
+      <div class="stat-label">Active Vectors</div>
+      <div class="stat-value" id="stat-vectors">{{ stats.attack_type_counts|length }}</div>
     </div>
   </div>
 
-  <!-- THREAT LEVEL LOGIC -->
-  {% if stats.total_attacks >= 50 %}
-    {% set threat_pct = 100 %}
-    {% set threat_level = "HIGH" %}
-    {% set threat_color = "#ff3355" %}
-  {% elif stats.total_attacks >= 20 %}
-    {% set threat_pct = 60 %}
-    {% set threat_level = "MEDIUM" %}
-    {% set threat_color = "#ffcc00" %}
-  {% else %}
-    {% set threat_pct = (stats.total_attacks * 5)|int %}
-    {% set threat_level = "LOW" %}
-    {% set threat_color = "#00ff88" %}
-  {% endif %}
-
-  <!-- THREAT LEVEL STYLES -->
-  <style>
-    .threat-level-text {
-      font-family: var(--mono);
-      font-size: 20px;
-      font-weight: 700;
-      margin-top: 8px;
-    }
-  </style>
-
-  <!-- THREAT INTELLIGENCE ALERTS PANEL -->
-  <div class="panel" style="margin-bottom:20px">
+  <div class="panel" style="margin-bottom:28px">
     <div class="panel-header">
-      <span class="panel-title">🔴 Threat Intelligence Alerts</span>
-      <span style="font-family:var(--mono);font-size:11px;color:var(--muted)">AUTO-DETECTED</span>
+      <span class="panel-title">📡 Live Attack Stream</span>
+      <span id="conn-status" style="font-family:var(--mono); font-size:10px; color:var(--red)">DISCONNECTED</span>
     </div>
     <div class="panel-body">
-      <div style="display:grid;grid-template-columns:1fr auto;gap:20px;align-items:start">
-        <div>
-          {% if stats.port_scan_ips %}
-          <div class="alert-box">
-            <div class="alert-icon">🔍</div>
-            <div class="alert-text">
-              <b>PORT SCAN DETECTED</b>
-              IPs hitting 3+ ports: {{ stats.port_scan_ips | join(", ") }}
-            </div>
-          </div>
-          {% endif %}
-
-          {% if stats.brute_force_ips %}
-          <div class="alert-box">
-            <div class="alert-icon">💥</div>
-            <div class="alert-text">
-              <b>SSH BRUTE FORCE DETECTED</b>
-              Repeated SSH hits from: {{ stats.brute_force_ips | join(", ") }}
-            </div>
-          </div>
-          {% endif %}
-
-          {% if not stats.port_scan_ips and not stats.brute_force_ips %}
-          <div class="alert-box warn">
-            <div class="alert-icon">📊</div>
-            <div class="alert-text">
-              <b>MONITORING IN PROGRESS</b>
-              No critical threat patterns detected yet. Honeypot is active.
-            </div>
-          </div>
-          {% endif %}
-        </div>
-
-        <div style="min-width:180px">
-          <div style="font-family:var(--mono);font-size:11px;color:var(--muted);margin-bottom:8px">OVERALL THREAT LEVEL</div>
-          <div class="threat-meter">
-            <div class="threat-bar">
-              <div class="threat-fill" style="width:50%;"></div>
-            </div>
-          </div>
-          <div class="threat-level-text" style="font-family:monospace;font-size:20px;font-weight:700;color:#ffcc00;margin-top:8px;">MEDIUM</div>
+      <div class="live-feed" id="live-feed">
+        <div class="feed-entry">
+          <span class="feed-ts">SYSTEM</span>
+          <span class="feed-payload">Waiting for incoming connections...</span>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- CHARTS -->
   <div class="grid3">
     <div class="panel">
-      <div class="panel-header"><span class="panel-title">📊 Attack Types</span></div>
-      <div class="panel-body" style="padding:12px">
-        <img src="/reports/attack_types.png?t={{ range(99999)|random }}" class="chart-img" alt="Attack Types"/>
-      </div>
+      <div class="panel-header"><span class="panel-title">📊 Attack Vectors</span></div>
+      <div class="panel-body"><img id="chart-types" src="/reports/attack_types.png" class="chart-img"/></div>
     </div>
     <div class="panel">
-      <div class="panel-header"><span class="panel-title">🌐 Top Attacker IPs</span></div>
-      <div class="panel-body" style="padding:12px">
-        <img src="/reports/top_ips.png?t={{ range(99999)|random }}" class="chart-img" alt="Top IPs"/>
-      </div>
+      <div class="panel-header"><span class="panel-title">🌍 Origin Map (Top)</span></div>
+      <div class="panel-body"><img id="chart-countries" src="/reports/countries.png" class="chart-img"/></div>
     </div>
     <div class="panel">
-      <div class="panel-header"><span class="panel-title">🔌 Service Hit Count</span></div>
-      <div class="panel-body" style="padding:12px">
-        <img src="/reports/services.png?t={{ range(99999)|random }}" class="chart-img" alt="Services"/>
-      </div>
+      <div class="panel-header"><span class="panel-title">🎯 Targeted Services</span></div>
+      <div class="panel-body"><img id="chart-ips" src="/reports/top_ips.png" class="chart-img"/></div>
     </div>
   </div>
 
-  <!-- ATTACK LOG + DEFENSE -->
   <div class="grid2">
-
-    <!-- LIVE ATTACK LOG -->
     <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">📋 Recent Attack Log</span>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">LAST 20 EVENTS</span>
-      </div>
-      <div class="panel-body" style="padding:0;overflow-x:auto">
-        <table class="threat-table">
+      <div class="panel-header"><span class="panel-title">📋 Recent Intelligence</span></div>
+      <div class="panel-body" style="padding:0">
+        <table class="threat-table" id="intel-table">
           <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Attacker IP</th>
-              <th>Service</th>
-              <th>Attack Type</th>
-            </tr>
+            <tr><th>Time</th><th>Attacker</th><th>Location</th><th>Service</th></tr>
           </thead>
-          <tbody id="attack-log">
-          {% for a in stats.recent_attacks %}
-          <tr>
-            <td class="ts-text">{{ a.timestamp[:19] }}</td>
-            <td class="ip-text">{{ a.attacker_ip }}</td>
-            <td>
-              {% set svc = a.service %}
-              {% if svc == "SSH" %}<span class="badge badge-ssh">SSH</span>
-              {% elif svc == "FTP" %}<span class="badge badge-ftp">FTP</span>
-              {% elif svc == "HTTP" or svc == "HTTP-ALT" %}<span class="badge badge-http">{{ svc }}</span>
-              {% elif svc == "Telnet" %}<span class="badge badge-tel">Telnet</span>
-              {% elif svc == "MySQL" %}<span class="badge badge-db">MySQL</span>
-              {% else %}<span class="badge badge-gen">{{ svc }}</span>{% endif %}
-            </td>
-            <td style="font-size:11px;color:var(--text)">{{ a.attack_type }}</td>
-          </tr>
-          {% endfor %}
+          <tbody>
+            {% for a in stats.recent_attacks[:10] %}
+            <tr>
+              <td style="color:var(--muted)">{{ a.timestamp[11:19] }}</td>
+              <td style="color:var(--green)">{{ a.attacker_ip }}</td>
+              <td><span class="badge badge-geo">{{ a.country }}</span></td>
+              <td style="color:var(--yellow)">{{ a.service }}</td>
+            </tr>
+            {% endfor %}
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- DEFENSE STRATEGIES -->
     <div class="panel">
-      <div class="panel-header">
-        <span class="panel-title">🛡 Defense Strategies</span>
-        <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">AI-GENERATED</span>
-      </div>
+      <div class="panel-header"><span class="panel-title">🛡 Defensive Posture</span></div>
       <div class="panel-body">
-        {% for attack_type, strategies in stats.defense_strategies.items() %}
-        <div class="strategy-block">
-          <div class="strategy-title">{{ attack_type }}</div>
-          <ul class="strategy-list">
-            {% for s in strategies %}
-            <li>{{ s }}</li>
-            {% endfor %}
-          </ul>
+        <div id="defenses">
+          {% for type, tips in stats.defense_strategies.items() %}
+          <div style="margin-bottom:15px">
+            <div style="color:var(--red); font-family:var(--mono); font-size:12px; font-weight:bold; margin-bottom:5px">⚠ {{ type }}</div>
+            <div style="font-size:12px; padding-left:10px; border-left:1px solid var(--muted)">{{ tips[0] }}</div>
+          </div>
+          {% endfor %}
         </div>
-        {% endfor %}
       </div>
     </div>
-
   </div>
-
-  <!-- TOP IPs TABLE -->
-  <div class="panel" style="margin-bottom:20px">
-    <div class="panel-header">
-      <span class="panel-title">🎯 Attacker IP Intelligence</span>
-    </div>
-    <div class="panel-body" style="padding:0;overflow-x:auto">
-      <table class="threat-table">
-        <thead>
-          <tr>
-            <th>#</th><th>IP Address</th><th>Total Hits</th><th>Risk Level</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for ip in stats.top_ips %}
-          <tr>
-            <td style="color:var(--muted)">{{ loop.index }}</td>
-            <td class="ip-text">{{ ip.ip }}</td>
-            <td>{{ ip.count }}</td>
-            <td>
-              {% if ip.count >= 15 %}<span class="badge badge-ssh">CRITICAL</span>
-              {% elif ip.count >= 8 %}<span class="badge badge-ftp">HIGH</span>
-              {% elif ip.count >= 4 %}<span class="badge badge-http">MEDIUM</span>
-              {% else %}<span class="badge badge-gen">LOW</span>{% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
 </main>
 
-<footer>
-  HoneytrapX · Wireless Honeypot Attack Analysis System · Built with Python &amp; Flask ·
-  {{ stats.total_attacks }} events logged
-</footer>
+<footer>HoneytrapX · Real-Time Honeypot System</footer>
 
 <script>
-  function refreshData() {
-    fetch('/api/refresh')
-      .then(r => r.json())
-      .then(d => {
-        document.getElementById('total').textContent = d.total_attacks;
-        document.getElementById('unique').textContent = d.unique_ips;
-        document.getElementById('last24').textContent = d.last_24h;
-        
-        ['total','unique','last24'].forEach(id => {
-          const el = document.getElementById(id);
-          el.style.transition = 'color .3s';
-          el.style.color = '#00ff88';
-          setTimeout(() => el.style.color = '', 600);
-        });
-      })
-      .catch(err => console.log("Refresh failed:", err));
+  const socket = io();
+  const feed = document.getElementById('live-feed');
+  const status = document.getElementById('conn-status');
+
+  socket.on('connect', () => {
+    status.textContent = 'CONNECTED';
+    status.style.color = 'var(--green)';
+  });
+
+  socket.on('disconnect', () => {
+    status.textContent = 'DISCONNECTED';
+    status.style.color = 'var(--red)';
+  });
+
+  function escapeHTML(str) {
+    if (!str) return "";
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
   }
 
-  // Auto refresh every 15 seconds
-  setInterval(refreshData, 15000);
+  socket.on('new_attack', (data) => {
+    // 1. Update Live Feed
+    const entry = document.createElement('div');
+    entry.className = 'feed-entry';
+
+    const ts = escapeHTML(data.timestamp.split(' ')[1]);
+    const ip = escapeHTML(data.attacker_ip);
+    const country = escapeHTML(data.country);
+    const city = escapeHTML(data.city);
+    const service = escapeHTML(data.service);
+    const payload = escapeHTML(data.payload || 'None');
+
+    entry.innerHTML = `
+      <span class="feed-ts">[${ts}]</span>
+      <span class="feed-ip">${ip}</span>
+      <span class="feed-geo">(${country} / ${city})</span>
+      <span class="feed-svc">hit ${service}</span>
+      <span class="feed-payload">Payload: ${payload}</span>
+    `;
+    feed.prepend(entry);
+    if (feed.childNodes.length > 50) feed.lastChild.remove();
+
+    // 2. Update Stats
+    const totalEl = document.getElementById('stat-total');
+    totalEl.textContent = parseInt(totalEl.textContent) + 1;
+    totalEl.style.color = '#fff';
+    setTimeout(() => totalEl.style.color = 'var(--green)', 500);
+
+    // 3. Update Table
+    const table = document.getElementById('intel-table').getElementsByTagName('tbody')[0];
+    const row = table.insertRow(0);
+    row.innerHTML = `
+      <td style="color:var(--muted)">${ts}</td>
+      <td style="color:var(--green)">${ip}</td>
+      <td><span class="badge badge-geo">${country}</span></td>
+      <td style="color:var(--yellow)">${service}</td>
+    `;
+    if (table.rows.length > 10) table.deleteRow(10);
+  });
+
+  // Periodically refresh charts
+  setInterval(() => {
+    fetch('/api/refresh_charts')
+      .then(r => r.json())
+      .then(() => {
+        const t = Date.now();
+        document.getElementById('chart-types').src = `/reports/attack_types.png?t=${t}`;
+        document.getElementById('chart-countries').src = `/reports/countries.png?t=${t}`;
+        document.getElementById('chart-ips').src = `/reports/top_ips.png?t=${t}`;
+      });
+  }, 30000);
 </script>
 
 </body>
