@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  honeytrapx:
+    build: .
+    ports:
+      - "2121:2121"   # FTP
+      - "2222:2222"   # SSH
+      - "2323:2323"   # Telnet
+      - "8080:8080"   # HTTP
+      - "8443:8443"   # HTTPS
+      - "33060:33060" # MySQL
+      - "5000:5000"   # Dashboard
+    environment:
+      - SECRET_KEY=prod-secret-key-change-me
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - honeypot_net
+
+networks:
+  honeypot_net:
+    driver: bridge
