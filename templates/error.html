@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html>
+<head><title>Database Error</title></head>
+<body style="background: white; color: black; font-family: monospace; padding: 50px;">
+    <h2>MySQL Error: 1064</h2>
+    <p>You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '''' at line 1</p>
+    <hr>
+    <p><i>Database: intranet_prod_db_v2</i></p>
+    <p><i>Query: SELECT * FROM users WHERE id = '{{ request.args.get("id") }}'</i></p>
+</body>
+</html>

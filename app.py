@@ -1,110 +1,147 @@
-from flask import Flask, render_template, jsonify, send_from_directory, request
+from flask import Flask, render_template, jsonify, send_from_directory, request, abort
 from flask_socketio import SocketIO, emit
-from analyzer import load_data, get_stats, generate_charts
+from analyzer import analyze_payload, get_mitre_info, calculate_score, load_data
 import os
 import json
-import random
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 
 app = Flask(__name__, static_folder=".")
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'honeypot-default-secret-change-me')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'honeypot-secret-123')
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 LOG_FILE = "logs/attacks.csv"
 
-@app.route('/reports/<path:filename>')
-def reports(filename):
-    return send_from_directory('reports', filename)
+def get_ip_score(ip):
+    df = load_data()
+    if df.empty: return 10
+    ip_history = df[df['attacker_ip'] == ip]
+    if ip_history.empty: return 10
+    return calculate_score(ip_history)
 
-def add_demo_data():
-    """Add demo attack data so dashboard looks great on first run."""
-    if os.path.exists(LOG_FILE):
-        try:
-            with open(LOG_FILE) as f:
-                lines = f.readlines()
-            if len(lines) > 1:
-                return  # Already has real data
-        except:
-            pass
+@app.route('/')
+def dashboard_redirect():
+    return render_template('index.html')
 
-    sample_ips = [
-        ("185.156.74.65", "Russia", "Moscow"),
-        ("45.33.22.11", "United States", "Dallas"),
-        ("103.21.244.5", "China", "Beijing"),
-        ("92.242.140.21", "United Kingdom", "London"),
-        ("210.10.5.33", "Japan", "Tokyo"),
-    ]
-    services = [
-        (2222, "SSH", "SSH Brute Force / Scan"),
-        (2121, "FTP", "FTP Probe"),
-        (2323, "Telnet", "Telnet Exploit Attempt"),
-        (8080, "HTTP", "Web Scan / HTTP Probe"),
-        (33060, "MySQL", "Database Attack"),
-        (8081, "HTTP-ALT", "Web App Attack"),
-    ]
-    payloads = [
-        "USER admin | PASS 123456", "GET /admin HTTP/1.1", "nmap scan detected",
-        "SELECT * FROM users", "root login attempt", "admin | admin",
-    ]
-
-    os.makedirs("logs", exist_ok=True)
-    with open(LOG_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp","attacker_ip","attacker_port","target_port",
-                         "service","attack_type","payload","duration_ms","country","city"])
-        base = datetime.now()
-        for i in range(40):
-            ts = base - timedelta(minutes=random.randint(0, 1440))
-            ip, country, city = random.choice(sample_ips)
-            port, svc, atype = random.choice(services)
-            writer.writerow([
-                ts.strftime("%Y-%m-%d %H:%M:%S"),
-                ip, random.randint(40000, 65000), port,
-                svc, atype, random.choice(payloads),
-                round(random.uniform(10, 500), 2),
-                country, city
-            ])
-    print("[*] Demo data loaded for new schema.")
-
-@app.route("/")
+@app.route('/dashboard')
 def index():
-    add_demo_data()
-    df = load_data()
-    generate_charts(df)
-    stats = get_stats(df)
-    return render_template("index.html", stats=stats)
+    return render_template('index.html')
 
-@app.route("/api/report_attack", methods=["POST"])
+# --- Decoy Web Endpoints ---
+
+@app.route('/admin')
+def admin_login():
+    log_http_attack("Access /admin - Fake Login Panel")
+    return render_template('admin_login.html')
+
+@app.route('/phpmyadmin')
+def phpmyadmin():
+    log_http_attack("Access /phpmyadmin - Fake Database Panel")
+    return render_template('phpmyadmin.html')
+
+@app.route('/.env')
+def exposed_env():
+    log_http_attack("Access /.env - Canary Token Triggered", 40)
+    return "DB_CONNECTION=mysql\nDB_HOST=127.0.0.1\nDB_PORT=3306\nDB_DATABASE=prod_db\nDB_USERNAME=root\nDB_PASSWORD=root_secure_password\nAPI_KEY=sk_live_51M...fake"
+
+@app.route('/config.php')
+def exposed_config():
+    log_http_attack("Access /config.php - Exposed Credentials")
+    return "<?php\n$db_host = 'localhost';\n$db_user = 'db_admin';\n$db_pass = 'p@ssw0rd123';\n$db_name = 'intranet_db';\n?>"
+
+@app.route('/robots.txt')
+def robots():
+    return "User-agent: *\nDisallow: /admin\nDisallow: /phpmyadmin\nDisallow: /.env\nDisallow: /backup\nDisallow: /config.php"
+
+@app.route('/api/v1/users')
+def api_users():
+    return jsonify([
+        {"id": 1, "username": "admin", "email": "admin@company.com"},
+        {"id": 2, "username": "developer", "email": "dev@company.com"}
+    ])
+
+@app.route('/login', methods=['POST'])
+def handle_login():
+    user = request.form.get('username')
+    pw = request.form.get('password')
+    log_http_attack(f"Login Attempt: {user}:{pw}", 15)
+    if user == 'admin' and pw == 'admin':
+        return "<h1>Admin Dashboard</h1><p>Welcome back, Admin.</p>"
+    return "Invalid credentials", 401
+
+@app.route('/api/report_attack', methods=['POST'])
 def report_attack():
-    attack_data = request.json
-    # Broadcast to all connected web clients
-    socketio.emit('new_attack', attack_data)
+    data = request.json
+    ip = data.get('attacker_ip')
+    payload = data.get('payload', '')
 
-    # Trigger chart regeneration periodically or every N attacks
-    # For now, just return success
-    return jsonify({"status": "received"}), 200
+    tags, _ = analyze_payload(payload)
+    mitre_tags = get_mitre_info(tags)
 
-@app.route("/api/stats")
-def api_stats():
-    df = load_data()
-    stats = get_stats(df)
-    return jsonify(stats)
+    data['mitre_tags'] = mitre_tags
 
-@app.route("/api/refresh_charts")
-def api_refresh_charts():
-    df = load_data()
-    generate_charts(df)
-    return jsonify({"status": "charts_updated"})
+    # Calculate score before saving to avoid double-logging or re-reading
+    score = get_ip_score(ip)
+    data['threat_score'] = score
 
-@socketio.on('connect')
-def handle_connect():
-    print(f"Client connected: {request.sid}")
+    save_to_csv(data)
+    socketio.emit('new_attack', data)
+    return jsonify({"status": "ok"}), 200
 
-if __name__ == "__main__":
-    os.makedirs("logs", exist_ok=True)
-    os.makedirs("reports", exist_ok=True)
-    print("=" * 50)
-    print("  REAL-TIME HONEYPOT DASHBOARD → http://127.0.0.1:5000")
-    print("=" * 50)
-    socketio.run(app, debug=True, port=5000, host="0.0.0.0")
+@app.route('/api/canary_alert', methods=['POST'])
+def canary_alert():
+    data = request.json
+    ip = data.get('attacker_ip')
+
+    save_to_csv(data) # Log the canary event too
+    score = get_ip_score(ip)
+    data['threat_score'] = score
+
+    socketio.emit('canary_triggered', data)
+    return jsonify({"status": "ok"}), 200
+
+# --- Helper Functions ---
+
+def log_http_attack(payload, score_inc=10):
+    ip = request.remote_addr
+    tags, _ = analyze_payload(payload)
+    mitre_tags = get_mitre_info(tags)
+
+    data = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "attacker_ip": ip,
+        "target_port": 5000, # Trap on the dashboard/web port
+        "service": "HTTP-Trap",
+        "payload": payload,
+        "country": "Local",
+        "city": "Local",
+        "lat": 0,
+        "lon": 0,
+        "mitre_tags": mitre_tags
+    }
+    save_to_csv(data)
+
+    score = get_ip_score(ip)
+    data['threat_score'] = score
+
+    socketio.emit('new_attack', data)
+
+def save_to_csv(data):
+    os.makedirs('logs', exist_ok=True)
+    header = not os.path.exists(LOG_FILE)
+
+    # Ensure all required fields exist to prevent CSV misalignment
+    fieldnames = ["timestamp","attacker_ip","target_port","service","payload","country","city","lat","lon","threat_score","mitre_tags","session_id"]
+
+    # Sanitize payload to remove newlines which break CSV
+    if 'payload' in data and isinstance(data['payload'], str):
+        data['payload'] = data['payload'].replace('\n', ' ').replace('\r', ' ')
+
+    with open(LOG_FILE, 'a', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if header: writer.writeheader()
+        row = {k: data.get(k, '') for k in fieldnames}
+        writer.writerow(row)
+
+if __name__ == '__main__':
+    socketio.run(app, debug=False, port=5000, host='0.0.0.0')

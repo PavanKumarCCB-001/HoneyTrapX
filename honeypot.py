@@ -1,24 +1,25 @@
 import socket
 import threading
-import csv
-import json
 import os
 import time
+import random
 import requests
+import uuid
 from datetime import datetime
+from session_engine import SessionManager
+from fake_filesystem import read_file
+from canary import trigger_canary
 
-LOG_FILE_CSV = "logs/attacks.csv"
-LOG_FILE_JSON = "logs/attacks.json"
+LOG_FILE = "logs/attacks.csv"
 DASHBOARD_URL = "http://127.0.0.1:5000/api/report_attack"
 
-# Fake service banners
 BANNERS = {
-    2121:  b"220 FTP server ready (vsftpd 2.0.1)\r\n",
-    2222:  b"SSH-2.0-OpenSSH_4.3\r\n",
-    2323:  b"\r\nWelcome to Cisco Router\r\nlogin: ",
-    8080:  b"HTTP/1.1 200 OK\r\nServer: Apache/2.2.3\r\nContent-Length: 0\r\n\r\n",
-    33060: b"5.0.51a-community\r\n",
-    8081:  b"HTTP/1.1 200 OK\r\nServer: Tomcat/4.1\r\n\r\n",
+    2121:  b"220 FTP server ready (vsftpd 3.0.3)\r\n",
+    2222:  b"SSH-2.0-OpenSSH_7.4p1 Debian-10+deb9u7\r\n",
+    2323:  b"\r\nWelcome to Ubuntu 18.04.4 LTS\r\nlogin: ",
+    8080:  b"HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\nContent-Length: 0\r\n\r\n",
+    8443:  b"HTTP/1.1 200 OK\r\nServer: Apache/2.4.41 (Ubuntu)\r\nContent-Length: 0\r\n\r\n",
+    33060: b"5.7.32-MySQL Community Server\r\n",
 }
 
 PORT_NAMES = {
@@ -26,152 +27,199 @@ PORT_NAMES = {
     2222: "SSH",
     2323: "Telnet",
     8080: "HTTP",
+    8443: "HTTPS",
     33060: "MySQL",
-    8081: "HTTP-ALT",
 }
 
-ATTACK_TYPES = {
-    2121:  "FTP Probe",
-    2222:  "SSH Brute Force / Scan",
-    2323:  "Telnet Exploit Attempt",
-    8080:  "Web Scan / HTTP Probe",
-    33060: "Database Attack",
-    8081:  "Web App Attack",
-}
-
-# Simple fake shell responses
-FAKE_SHELL_RESPONSES = {
-    "ls": "bin  boot  dev  etc  home  lib  media  mnt  opt  root  run  sbin  srv  sys  tmp  usr  var\n",
-    "whoami": "root\n",
-    "uname -a": "Linux debian 4.19.0-6-amd64 #1 SMP Debian 4.19.67-2 (2019-08-28) x86_64 GNU/Linux\n",
-    "pwd": "/root\n",
-    "cat /etc/passwd": "root:x:0:0:root:/root:/bin/bash\nadmin:x:1000:1000:admin:/home/admin:/bin/bash\n",
-}
-
-os.makedirs("logs", exist_ok=True)
-
-geo_cache = {}
+session_manager = SessionManager()
 
 def get_geo(ip):
-    if ip in geo_cache: return geo_cache[ip]
     if ip in ["127.0.0.1", "localhost"] or ip.startswith("192.168."):
-        return "Local Network", "Internal"
+        return "Local Network", "Internal", 0, 0
     try:
         response = requests.get(f"http://ip-api.com/json/{ip}", timeout=2).json()
         if response.get("status") == "success":
-            geo = (response.get("country", "Unknown"), response.get("city", "Unknown"))
-            geo_cache[ip] = geo
-            return geo
+            return (
+                response.get("country", "Unknown"),
+                response.get("city", "Unknown"),
+                response.get("lat", 0),
+                response.get("lon", 0)
+            )
     except: pass
-    return "Unknown", "Unknown"
-
-def init_logs():
-    headers = ["timestamp", "attacker_ip", "attacker_port", "target_port",
-               "service", "attack_type", "payload", "duration_ms", "country", "city"]
-    if not os.path.exists(LOG_FILE_CSV):
-        with open(LOG_FILE_CSV, "w", newline="") as f:
-            csv.writer(f).writerow(headers)
-
-init_logs()
-log_lock = threading.Lock()
+    return "Unknown", "Unknown", 0, 0
 
 def notify_dashboard(attack_data):
     try: requests.post(DASHBOARD_URL, json=attack_data, timeout=1)
     except: pass
 
-def log_attack(ip, attacker_port, target_port, payload, duration_ms):
-    country, city = get_geo(ip)
-    attack_data = {
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "attacker_ip": ip, "attacker_port": attacker_port, "target_port": target_port,
-        "service": PORT_NAMES.get(target_port, "Unknown"),
-        "attack_type": ATTACK_TYPES.get(target_port, "Generic Probe"),
-        "payload": payload.replace("\n", " ")[:200],
-        "duration_ms": round(duration_ms, 2),
-        "country": country, "city": city
-    }
+def handle_interactive_session(conn, session):
+    """Manages the fake shell interaction."""
+    conn.settimeout(30)
+    try:
+        # Initial prompts for telnet/ssh emulation
+        if session.target_port == 2323:
+            # Login loop
+            for _ in range(3):
+                data = conn.recv(1024)
+                if not data: return
+                session.history.append({"ts": time.time(), "in": data.decode(errors="ignore")})
+                conn.sendall(b"Password: ")
+                data = conn.recv(1024)
+                if not data: return
+                session.history.append({"ts": time.time(), "in": "****"})
+                time.sleep(random.uniform(0.5, 1.5))
+                conn.sendall(b"Login incorrect\r\n\r\nlogin: ")
+            return
 
-    with log_lock:
-        # Log to CSV
-        with open(LOG_FILE_CSV, "a", newline="") as f:
-            csv.writer(f).writerow(list(attack_data.values()))
-        # Log to JSON
-        with open(LOG_FILE_JSON, "a") as f:
-            f.write(json.dumps(attack_data) + "\n")
+        # Simple Command Loop
+        conn.sendall(f"{session.user}@{socket.gethostname()}:{session.cwd}$ ".encode())
+        while True:
+            data = conn.recv(1024)
+            if not data: break
 
-    print(f"[{attack_data['timestamp']}] {attack_data['service']} hit by {ip} ({country})")
-    notify_dashboard(attack_data)
+            cmd = data.decode(errors="ignore").strip()
+            if not cmd:
+                conn.sendall(f"{session.user}@{socket.gethostname()}:{session.cwd}$ ".encode())
+                continue
+
+            # Add jitter to mimic real system load
+            time.sleep(random.uniform(0.05, 0.4))
+
+            # Intercept cat to check for canaries
+            if cmd.startswith("cat "):
+                parts = cmd.split()
+                if len(parts) > 1:
+                    path = parts[1]
+                    if not path.startswith("/"):
+                        abs_path = os.path.normpath(os.path.join(session.cwd, path))
+                    else:
+                        abs_path = path
+
+                    _, canary_token = read_file(abs_path)
+                    if canary_token:
+                        trigger_canary(canary_token, session.session_id, session.ip, session.target_port, abs_path)
+
+            output = session.execute_command(cmd)
+            conn.sendall(output.encode())
+
+            if cmd == "exit":
+                break
+
+            conn.sendall(f"{session.user}@{socket.gethostname()}:{session.cwd}$ ".encode())
+
+    except Exception as e:
+        print(f"Session Error: {e}")
+    finally:
+        session_manager.end_session(session.session_id)
 
 def handle_connection(conn, addr, port):
-    start = time.time()
     attacker_ip, attacker_port = addr
-    payload_parts = []
+    session_id = str(uuid.uuid4())
+    session = session_manager.create_session(session_id, attacker_ip, port)
+
+    country, city, lat, lon = get_geo(attacker_ip)
 
     try:
         banner = BANNERS.get(port, b"Connected.\r\n")
         conn.sendall(banner)
-        conn.settimeout(10)
 
+        # Log the initial connection for real-time dashboard
+        attack_data = {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "attacker_ip": attacker_ip,
+            "target_port": port,
+            "service": PORT_NAMES.get(port, "Unknown"),
+            "payload": "Connection established",
+            "country": country,
+            "city": city,
+            "lat": lat,
+            "lon": lon,
+            "session_id": session_id
+        }
+        notify_dashboard(attack_data)
+
+        # Interactive shell for SSH/Telnet
         if port in [2222, 2323]:
-            # Simple interactive shell lure
-            data = conn.recv(1024)
-            if data:
-                payload_parts.append(data.decode(errors="ignore").strip())
-                conn.sendall(b"Username: ")
-                user = conn.recv(1024)
-                if user:
-                    payload_parts.append(f"USER:{user.decode(errors='ignore').strip()}")
-                    conn.sendall(b"Password: ")
-                    pw = conn.recv(1024)
-                    if pw:
-                        payload_parts.append(f"PASS:{pw.decode(errors='ignore').strip()}")
-                        conn.sendall(b"\r\nWelcome to the restricted shell. Type 'help' for commands.\r\n# ")
+            handle_interactive_session(conn, session)
+        elif port in [8080, 8443]:
+            # Web lure: Interactive responses for common paths
+            conn.settimeout(5)
+            data = conn.recv(4096)
+            payload = data.decode(errors="ignore") if data else ""
+            session.history.append({"ts": time.time(), "in": payload})
 
-                        # Miniature fake shell loop (2 commands max to avoid hanging)
-                        for _ in range(2):
-                            cmd_data = conn.recv(1024)
-                            if not cmd_data: break
-                            cmd = cmd_data.decode(errors="ignore").strip().lower()
-                            payload_parts.append(f"CMD:{cmd}")
-                            if cmd in FAKE_SHELL_RESPONSES:
-                                conn.sendall(FAKE_SHELL_RESPONSES[cmd].encode() + b"# ")
-                            elif cmd == "exit":
-                                break
-                            else:
-                                conn.sendall(f"sh: {cmd}: command not found\n# ".encode())
+            if payload:
+                first_line = payload.splitlines()[0] if payload else ""
+                attack_data["payload"] = first_line
+                notify_dashboard(attack_data)
+
+                if "GET / " in first_line or "GET /index" in first_line:
+                    response = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Server: Apache/2.4.41 (Ubuntu)\r\n"
+                        "Content-Type: text/html\r\n\r\n"
+                        "<html><body><h1>It works!</h1><p>This is the default welcome page.</p>"
+                        "<!-- TODO: Move the management console from /admin to a secure port --></body></html>"
+                    )
+                    conn.sendall(response.encode())
+                elif "GET /admin" in first_line:
+                    response = (
+                        "HTTP/1.1 200 OK\r\n"
+                        "Content-Type: text/html\r\n\r\n"
+                        "<html><body><h2>Admin Login</h2><form>User: <input type='text'><br>Pass: <input type='password'><br><input type='submit'></form></body></html>"
+                    )
+                    conn.sendall(response.encode())
+                elif "GET /phpmyadmin" in first_line:
+                    response = "HTTP/1.1 200 OK\r\n\r\nphpMyAdmin - Error: Access Denied"
+                    conn.sendall(response.encode())
+                elif "GET /.env" in first_line:
+                    response = "HTTP/1.1 200 OK\r\n\r\nDB_PASSWORD=secret_pass\nAPI_KEY=sk_live_fake"
+                    conn.sendall(response.encode())
+                elif "GET /robots.txt" in first_line:
+                    response = "HTTP/1.1 200 OK\r\n\r\nUser-agent: *\nDisallow: /admin\nDisallow: /phpmyadmin"
+                    conn.sendall(response.encode())
         else:
-            data = conn.recv(1024)
-            if data: payload_parts.append(data.decode(errors="ignore").strip())
+            # Generic capture for other ports
+            conn.settimeout(5)
+            data = conn.recv(4096)
+            payload = data.decode(errors="ignore") if data else ""
+            session.history.append({"ts": time.time(), "in": payload})
+
+            # Update dashboard with payload if any
+            if payload:
+                attack_data["payload"] = payload[:200]
+                notify_dashboard(attack_data)
 
     except Exception as e:
-        payload_parts.append(f"[Error: {e}]")
+        pass
     finally:
-        duration_ms = (time.time() - start) * 1000
-        log_attack(attacker_ip, attacker_port, port, " | ".join(payload_parts), duration_ms)
         try: conn.close()
         except: pass
+        session_manager.end_session(session_id)
 
 def start_listener(port):
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("0.0.0.0", port))
-        server.listen(5)
-        print(f"[*] Listening on port {port} ({PORT_NAMES.get(port)})")
+        server.listen(10)
+        print(f"[*] Honeypot listening on port {port} ({PORT_NAMES.get(port)})")
         while True:
             conn, addr = server.accept()
             threading.Thread(target=handle_connection, args=(conn, addr, port), daemon=True).start()
     except Exception as e:
-        print(f"[!] Could not start listener on {port}: {e}")
+        print(f"[!] Bind error on {port}: {e}")
 
 def run():
-    print("="*50 + "\n   HONEYTRAPX REAL-TIME ENGINE STARTING\n" + "="*50)
+    os.makedirs("logs/sessions", exist_ok=True)
     for port in BANNERS.keys():
         threading.Thread(target=start_listener, args=(port,), daemon=True).start()
+
+    print("\n[+] All honeypot services active.")
     try:
         while True: time.sleep(1)
     except KeyboardInterrupt:
-        print("\n[!] Stopping...")
+        print("\n[!] Shutting down.")
 
 if __name__ == "__main__":
     run()
