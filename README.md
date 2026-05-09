@@ -11,7 +11,7 @@
 
 ## 📌 Overview
 
-**HoneytrapX** is a wireless honeypot system developed as part of a Mobile Security course project. It simulates vulnerable network services (SSH, FTP, Telnet, HTTP, MySQL) to lure and capture attacker behavior. All captured data is logged, analyzed, and displayed on a live web dashboard with real-time defense strategy generation.
+**HoneytrapX** is a wireless honeypot system that simulates vulnerable network services (SSH, FTP, Telnet, HTTP, MySQL) to lure and capture attacker behavior. All captured data is logged, analyzed, and displayed on a live web dashboard with real-time defense strategy generation.
 
 ### What it does:
 - **Mimics** real vulnerable services with convincing fake banners and responses
@@ -153,15 +153,6 @@ HoneytrapX doesn't just log attacks — it tells you exactly what to do about th
 | HTTP Probe | Deploy WAF, hide server banners, enable rate limiting |
 | Database Attack | Never expose DB ports, bind to localhost only |
 
----
-
-## 🔒 Ethical & Legal Notice
-
-> This tool is built **strictly for educational purposes** as part of a university Mobile Security assignment.
-> Run it **only on networks you own or have explicit written permission to monitor.**
-> Unauthorized use of honeypots on public or shared networks may violate local laws.
-
----
 
 ## 🛠 Tech Stack
 
